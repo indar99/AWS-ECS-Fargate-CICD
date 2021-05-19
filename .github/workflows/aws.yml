@@ -23,21 +23,30 @@
 #    See the documentation for each action used below for the recommended IAM policies for this IAM user,
 #    and best practices on handling the access key credentials.
 
-on:
-  release:
-    types: [created]
+name: 'Terraform'
 
-name: Deploy to Amazon ECS
+on:
+  push:
+    branches:
+    - main
+  pull_request:
 
 jobs:
-  deploy:
-    name: Deploy
+  terraform:
+    name: 'Terraform'
     runs-on: ubuntu-latest
     environment: production
 
+    # Use the Bash shell regardless whether the GitHub Actions runner is ubuntu-latest, macos-latest, or windows-latest
+    defaults:
+      run:
+        shell: bash
+
     steps:
+    # Checkout the repository to the GitHub Actions runner
     - name: Checkout
       uses: actions/checkout@v2
+
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
