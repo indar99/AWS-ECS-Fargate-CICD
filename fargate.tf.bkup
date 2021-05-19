@@ -1,0 +1,210 @@
+resource "aws_vpc" "main" {
+  cidr_block       = "${var.vpc_cidr}"
+  instance_tenancy = "default"
+
+  tags = {
+    Name = "${var.vpc_name}"
+  }
+}
+
+######## avaialabilty zones
+
+data "aws_availability_zones" "azs" {
+}
+
+########  Public Subnet #########
+
+locals {
+  azs_name = "${data.aws_availability_zones.azs.names}"
+}
+
+
+resource "aws_subnet" "main" {
+  count = "${length(slice(local.azs_name, 0,2))}" 
+  vpc_id     = "${aws_vpc.main.id}"
+  cidr_block = "${cidrsubnet(var.vpc_cidr, 3, count.index)}"
+  availability_zone = "${local.azs_name[count.index]}"
+  map_public_ip_on_launch = "true"
+
+  tags = {
+    Name = "${var.subname}-${count.index}"
+  }
+
+}
+
+######### vpc internet gateway ############
+
+resource "aws_internet_gateway" "gw" {
+  vpc_id = "${aws_vpc.main.id}"
+
+  tags = {
+    Name = "${var.pubigw}"
+  }
+}
+
+#######  Public route table ##############
+
+resource "aws_route_table" "route" {
+  vpc_id = "${aws_vpc.main.id}"
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = "${aws_internet_gateway.gw.id}"
+  }
+
+  tags = {
+    Name = "${var.pubrt}"
+  }
+}
+
+resource "aws_route_table_association" "rta" {
+  count = "${length(slice(local.azs_name,0,2))}"
+  subnet_id      = "${aws_subnet.main.*.id[count.index]}"
+  route_table_id = "${aws_route_table.route.id}"
+}
+
+############## ALb Security Group Creation ###########
+
+resource "aws_security_group" "allow_tls" {
+  name        = "TF-public-alb-sg"
+  description = "Allow TLS inbound traffic"
+  vpc_id      = "${aws_vpc.main.id}"
+
+
+  ingress {
+    description      = "ssh  VPC"
+    from_port        = 22
+    to_port          = 22
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description      = "TLS from VPC"
+    from_port        = 80
+    to_port          = 80
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "${var.alb-sg}"
+  }
+}
+
+############### ALB Creation ###############################
+
+resource "aws_lb" "alb" {
+  name               = "${var.alb-name}"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = ["${aws_security_group.allow_tls.id}"]
+  subnets            = aws_subnet.main.*.id
+
+  enable_deletion_protection = false
+
+  access_logs {
+    bucket  = "${var.bucket}"
+    enabled = true
+  }
+
+  tags = {
+    Environment = "TF-Testing"
+  }
+}
+
+resource "aws_lb_listener" "front_end" {
+  load_balancer_arn = "${aws_lb.alb.arn}"
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type = "forward"
+    target_group_arn = aws_lb_target_group.test-tg.arn
+
+    }
+}
+
+resource "aws_lb_target_group" "test-tg" {
+  name     = "tf-tgt-ecs"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = "${aws_vpc.main.id}"
+  target_type = "ip"
+
+  health_check {
+    healthy_threshold   = "3"
+    interval            = "90"
+    protocol            = "HTTP"
+    matcher             = "200-299"
+    timeout             = "20"
+    path                = "/"
+    unhealthy_threshold = "2"
+  }
+}
+
+######################## Create AWS ECS Fargate to deploy web application
+
+resource "aws_ecs_cluster" "Efargte" {
+  name = "ECS-TF-DEMO"
+  capacity_providers = ["FARGATE"]
+}
+
+###### ECS Task defination
+
+resource "aws_ecs_task_definition" "ngx-task" {
+  family                = "ngx-task"
+  execution_role_arn = "${aws_iam_role.ecs_task_execution_role.arn}"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "1024"
+  container_definitions = jsonencode([
+    {
+      name      = "${var.container-name}"
+      image     = "${var.docker-image}"
+      memory    = 512
+      essential = true
+      portMappings = [
+        {
+          containerPort = 80
+          hostPort      = 80
+        }
+      ]
+    }]
+  )
+}
+######### ECS Fargate Service defination
+resource "aws_ecs_service" "ngx-serv" {
+  name            = "nginx-service"
+  cluster         = "${aws_ecs_cluster.Efargte.id}"
+  task_definition = "${aws_ecs_task_definition.ngx-task.arn}"
+  desired_count   = 1
+  launch_type = "FARGATE"
+  deployment_minimum_healthy_percent = 50
+  deployment_maximum_percent = 200
+  
+  network_configuration {
+    subnets            = aws_subnet.main.*.id
+    security_groups    = ["${aws_security_group.allow_tls.id}"]
+    assign_public_ip = "true"      
+  }
+
+
+  load_balancer {
+    target_group_arn = "${aws_lb_target_group.test-tg.id}"
+    container_name   = "nginx"
+    container_port   = 80
+  }
+  depends_on = [aws_lb_listener.front_end , aws_iam_role_policy_attachment.ecs_task_execution_role]
+
+}
+	
