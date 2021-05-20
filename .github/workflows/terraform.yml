@@ -107,18 +107,4 @@ jobs:
       run: terraform apply -auto-approve
       
          
-    - name: Fill in the new image ID in the Amazon ECS task definition
-      id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: ngx-task.json
-        container-name: nginx
-        image: ${{ steps.build-image.outputs.image }}
 
-    - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-      with:
-        task-definition: ${{ steps.task-def.outputs.task-definition }}
-        service: nginx-service
-        cluster: ECS-TF-DEMO
-        wait-for-service-stability: true
