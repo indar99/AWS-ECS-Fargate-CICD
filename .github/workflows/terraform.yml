@@ -93,7 +93,7 @@ jobs:
         
     - name: Download task def 
       run: |
-        aws ecs describe-task-defination --task-defination nginx --query taskDefination > ngx-task.json 
+        aws ecs describe-task-definition --task-definition nginx --query taskDefinition > ngx-task.json 
   
     - name: Fill in the new image ID in the Amazon ECS task definition
       id: render-container
